@@ -1,26 +1,52 @@
 import sys, os, json, re
-import requests
 from bs4 import BeautifulSoup
 from pathlib import Path
 from docx import Document
 from docx.shared import Pt
 from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
 from dotenv import load_dotenv
+from rouge_score import rouge_scorer
+from bert_score import score as bert_score
+import numpy as np
 import google.generativeai as genai
+import requests
+import csv
 
 # --- Load environment and configure Gemini ---
 load_dotenv()
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
 
-def fetch_court_case(url):
-    try:
-        r = requests.get(url)
-        r.raise_for_status()
-        return BeautifulSoup(r.content, "html.parser")
-    except Exception as e:
-        print(f"❌ Error fetching {url}: {e}")
-        return None
+def fetch_court_case(url, max_retries=3):
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+    }
+    for attempt in range(max_retries):
+        try:
+            print(f"🔄 Attempt {attempt + 1}: {url}", file=sys.stderr)
+            response = requests.get(url, headers=headers, timeout=10)
+            if response.status_code == 200:
+                return BeautifulSoup(response.content, "html.parser")
+            else:
+                print(f"⚠️ Status Code: {response.status_code}", file=sys.stderr)
+        except Exception as e:
+            print(f"❌ Request failed: {e}", file=sys.stderr)
+    return None
+
+def is_meaningful_line(line):
+    line = line.strip()
+    if len(line) < 5:
+        return False
+    if re.fullmatch(r'([xX*#.\-– ])\1{2,}', line.replace(' ', '')):
+        return False
+    if len(set(line.lower())) < 3:
+        return False
+    return True
+
+def clean_line(line):
+    line = re.sub(r'^(x\s+)+', '', line.strip(), flags=re.IGNORECASE)
+    line = re.sub(r'(x\s+)+$', '', line.strip(), flags=re.IGNORECASE)
+    return line.strip()
 
 def extract_full_text(soup):
     for tag in soup.find_all(["a", "sup"]):
@@ -103,13 +129,6 @@ def extract_case_details(text):
         "Ponente": judge
     }
 
-def clean_gemini_output(text: str):
-    # Remove markdown-style csv blocks and headers
-    text = re.sub(r'```csv\s*', '', text)
-    text = re.sub(r'```', '', text)
-    text = re.sub(r'Raw Generated (Facts|Issues|Rulings)', '', text, flags=re.IGNORECASE)
-    return text.strip()
-
 def extract_case_sections_from_text(text):
     section_patterns = {
         "Facts": [
@@ -149,18 +168,30 @@ def extract_case_sections_from_text(text):
     matches.sort()
     grouped = {"Facts": [], "Issues": [], "Ruling": []}
 
+    # --- Case 1: Matching headers found ---
     if matches:
         for i, (start, section) in enumerate(matches):
             end = matches[i + 1][0] if i + 1 < len(matches) else len(text)
             section_text = text[start:end].strip()
-            grouped[section] = section_text.split("\n")
-    else:
-        lines = [l.strip() for l in text.split("\n") if len(l.strip()) > 5]
-        third = len(lines) // 3
-        grouped["Facts"] = lines[:third]
-        grouped["Issues"] = lines[third:2*third]
-        grouped["Ruling"] = lines[2*third:]
+            paragraphs = [p.strip() for p in section_text.split("\n") if p.strip()]
+            cleaned = [clean_line(p) for p in paragraphs]
+            meaningful = [p for p in cleaned if is_meaningful_line(p)]
+            grouped[section].extend(meaningful)
+        return grouped
+
+    # --- Case 2: No headers found — fallback logic ---
+    print("⚠️ No headers detected — using fallback segmentation.")
+    lines = [line.strip() for line in text.split("\n") if is_meaningful_line(line)]
+    total = len(lines)
+
+    if total > 0:
+        grouped["Facts"] = lines[: total // 3]
+        grouped["Issues"] = lines[total // 3 : (2 * total) // 3]
+        grouped["Ruling"] = lines[(2 * total) // 3 :]
+
     return grouped
+
+
 
 def generate_gemini_response(prompt, text):
     try:
@@ -208,9 +239,9 @@ def clean_summary_output(raw_text: str) -> str:
 
         # Remove Markdown bold and italic symbols
         line = re.sub(r"[*_`]+", "", line)
-        line = re.sub(r'```csv\s*', '', text)
-        line = re.sub(r'```', '', text)
-        line = re.sub(r'Raw Generated (Facts|Issues|Rulings)', '', text, flags=re.IGNORECASE)
+        line = re.sub(r'```csv\s*', '', line)
+        line = re.sub(r'```', '', line)
+        line = re.sub(r'Raw Generated (Facts|Issues|Rulings)', '', line, flags=re.IGNORECASE)
         
         # Remove markdown bullets (*, -, 1., etc.)
         line = re.sub(r"^\s*[-*•]\s*", "", line)
@@ -227,6 +258,30 @@ def clean_summary_output(raw_text: str) -> str:
 
     return "\n".join(cleaned_lines)
 
+def compute_rouge(generated: str, reference: str):
+    scorer = rouge_scorer.RougeScorer(['rouge1', 'rougeL'], use_stemmer=True)
+    scores = scorer.score(reference, generated)
+    return {
+        "rouge-1": scores["rouge1"].fmeasure,
+        "rouge-l": scores["rougeL"].fmeasure,
+    }
+
+def compute_bert_score(generated: str, reference: str):
+    P, R, F1 = bert_score([generated], [reference], lang="en", rescale_with_baseline=True)
+    return {
+        "bert-score": F1[0].item()
+    }
+
+def evaluate_all(generated: str, reference: str):
+    rouge = compute_rouge(generated, reference)
+    bert = compute_bert_score(generated, reference)
+    return {
+        "rouge-1": round(rouge["rouge-1"], 4),
+        "rouge-l": round(rouge["rouge-l"], 4),
+        "bert-score": round(bert["bert-score"], 4),
+    }
+
+
 def main():
     if len(sys.argv) < 3:
         print("Usage: training.py <url> <direction>")
@@ -238,7 +293,6 @@ def main():
         print(json.dumps({ "error": "Direction must be either 'forward' or 'backward'" }))
         return
 
-    url = sys.argv[1]
     soup = fetch_court_case(url)
     if not soup:
         print(json.dumps({ "error": "Failed to fetch or parse the URL" }))
@@ -256,23 +310,70 @@ def main():
     metadata = extract_case_details(text)
     sections = extract_case_sections_from_text(text)
 
+    if direction == "backward":
+        facts_input = "\n".join(sections["Ruling"]) + "\n" + "\n".join(sections["Issues"])
+        issues_input = "\n".join(sections["Ruling"]) + "\n" + "\n".join(sections["Facts"])
+        rulings_input = "\n".join(sections["Facts"]) + "\n" + "\n".join(sections["Issues"])
+    else:
+        facts_input = "\n".join(sections["Facts"])
+        issues_input = "\n".join(sections["Issues"])
+        rulings_input = "\n".join(sections["Ruling"])
+
     summary = {
-            "gr_no": metadata["G.R. Number"],
-            "facts": clean_summary_output(generate_gemini_response(config["FACTS"][direction.upper()]["Instructor_Extractive"], "\n".join(sections["Facts"]))),
-            "issues": clean_summary_output(generate_gemini_response(config["ISSUES"][direction.upper()]["Judge_Extractive"], "\n".join(sections["Issues"]))),
-            "rulings": clean_summary_output(generate_gemini_response(config["RULINGS"][direction.upper()]["Instructor_ChainOfThought"], "\n".join(sections["Ruling"]))),
+        "gr_no": metadata["G.R. Number"],
+        "facts": clean_summary_output(generate_gemini_response(config["FACTS"][direction.upper()]["Instructor_Extractive"], facts_input)),
+        "issues": clean_summary_output(generate_gemini_response(config["ISSUES"][direction.upper()]["Judge_Extractive"], issues_input)),
+        "rulings": clean_summary_output(generate_gemini_response(config["RULINGS"][direction.upper()]["Instructor_ChainOfThought"], rulings_input)),
     }
+
+                    # Compute evaluation metrics
+    facts_scores = evaluate_all(summary["facts"], "\n".join(sections["Facts"]))
+    issues_scores = evaluate_all(summary["issues"], "\n".join(sections["Issues"]))
+    rulings_scores = evaluate_all(summary["rulings"], "\n".join(sections["Ruling"]))
 
     output_dir = base_dir / "public/downloads"
     output_dir.mkdir(parents=True, exist_ok=True)
     filename = f"{metadata['G.R. Number'].replace(' ', '_')}_{direction}_digested.docx"
     out_path = output_dir / filename
-
     write_docx(summary, out_path, metadata)
 
+    # Save as CSV
+    csv_dir = base_dir / "public/generated_csv"
+    csv_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = csv_dir / f"{metadata['G.R. Number'].replace(' ', '_')}_{direction}_output.csv"
+    with open(csv_path, "w", newline="", encoding="utf-8") as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow([
+            "G.R. Number",
+            "Generated_Facts", "Generated_Issues", "Generated_Rulings",
+            "Original_Facts", "Original_Issues", "Original_Rulings",
+            "Facts_ROUGE-1", "Facts_ROUGE-L", "Facts_BERTScore",
+            "Issues_ROUGE-1", "Issues_ROUGE-L", "Issues_BERTScore",
+            "Rulings_ROUGE-1", "Rulings_ROUGE-L", "Rulings_BERTScore"
+        ])
+
+        writer.writerow([
+            metadata["G.R. Number"],
+            summary["facts"], summary["issues"], summary["rulings"],
+            "\n".join(sections["Facts"]),
+            "\n".join(sections["Issues"]),
+            "\n".join(sections["Ruling"]),
+            facts_scores["rouge-1"], facts_scores["rouge-l"], facts_scores["bert-score"],
+            issues_scores["rouge-1"], issues_scores["rouge-l"], issues_scores["bert-score"],
+            rulings_scores["rouge-1"], rulings_scores["rouge-l"], rulings_scores["bert-score"],
+        ])
+
+
+    # Compute evaluation metrics
     print(json.dumps({
         "summary": summary,
-        "downloadUrl": f"/downloads/{filename}"
+        "downloadUrl": f"/downloads/{filename}",
+        "csvUrl": f"/generated_csv/{csv_path.name}",
+        "scores": {
+            "facts": facts_scores,
+            "issues": issues_scores,
+            "rulings": rulings_scores
+        }
     }))
 
 if __name__ == "__main__":
