@@ -377,4 +377,4 @@ def main_pipeline(url: str, direction: str):
         }
 
 if __name__ == "__main__":
-    main()
+    main_pipeline()
