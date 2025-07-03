@@ -7,7 +7,7 @@ config(); // Load .env
 export async function POST(req: Request) {
   const body = await req.json();
 
-  const fastApiUrl = process.env.FASTAPI_URL || 'https://your-fastapi-server.com/generate';
+  const fastApiUrl = process.env.FASTAPI_URL || 'https://celtzers-website.onrender.com';
 
   try {
     const res = await fetch(fastApiUrl, {
