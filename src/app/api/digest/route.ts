@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { spawn } from 'child_process';
 import { config } from 'dotenv';
 
-config(); // Load env vars
+config(); // Load .env
 
 export async function POST(req: Request): Promise<Response> {
   const body = await req.json();
