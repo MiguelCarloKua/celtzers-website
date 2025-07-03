@@ -8,20 +8,24 @@ export async function POST(req: Request): Promise<Response> {
   const body = await req.json();
   const { url, direction } = body;
 
-  return new Promise((resolve) => {
+  return new Promise<Response>((resolve) => {
     const python = spawn('python', ['python/training.py', url, direction]);
     let output = '';
-    
-    python.stdout.on('data', (data) => (output += data.toString()));
+
+    python.stdout.on('data', (data) => {
+      output += data.toString();
+    });
+
     python.stderr.on('data', (data) => {
       console.error('🚨 Python stderr:', data.toString());
     });
 
     python.on('close', () => {
       if (!output.trim()) {
-        return resolve(
+        resolve(
           NextResponse.json({ error: 'No output received from Python script' }, { status: 500 })
         );
+        return;
       }
 
       try {
