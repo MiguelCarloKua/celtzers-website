@@ -282,7 +282,7 @@ def evaluate_all(generated: str, reference: str):
     }
 
 
-def main():
+def main_pipeline(url: str, direction: str):
     if len(sys.argv) < 3:
         print("Usage: training.py <url> <direction>")
         return
@@ -365,16 +365,16 @@ def main():
 
 
     # Compute evaluation metrics
-    print(json.dumps({
-        "summary": summary,
-        "downloadUrl": f"/downloads/{filename}",
-        "csvUrl": f"/generated_csv/{csv_path.name}",
-        "scores": {
-            "facts": facts_scores,
-            "issues": issues_scores,
-            "rulings": rulings_scores
+        return {
+            "summary": summary,
+            "downloadUrl": f"/downloads/{filename}",
+            "csvUrl": f"/generated_csv/{csv_path.name}",
+            "scores": {
+                "facts": facts_scores,
+                "issues": issues_scores,
+                "rulings": rulings_scores
+            }
         }
-    }))
 
 if __name__ == "__main__":
     main()

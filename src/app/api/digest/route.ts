@@ -4,39 +4,22 @@ import { config } from 'dotenv';
 
 config(); // Load .env
 
-export async function POST(req: Request): Promise<Response> {
+export async function POST(req: Request) {
   const body = await req.json();
-  const { url, direction } = body;
 
-  return new Promise<Response>((resolve) => {
-    const python = spawn('python', ['python/training.py', url, direction]);
-    let output = '';
+  const fastApiUrl = process.env.FASTAPI_URL || 'https://your-fastapi-server.com/generate';
 
-    python.stdout.on('data', (data) => {
-      output += data.toString();
+  try {
+    const res = await fetch(fastApiUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
     });
 
-    python.stderr.on('data', (data) => {
-      console.error('🚨 Python stderr:', data.toString());
-    });
-
-    python.on('close', () => {
-      if (!output.trim()) {
-        resolve(
-          NextResponse.json({ error: 'No output received from Python script' }, { status: 500 })
-        );
-        return;
-      }
-
-      try {
-        const parsed = JSON.parse(output);
-        resolve(NextResponse.json(parsed));
-      } catch (err) {
-        console.error('❌ Failed to parse:', err);
-        resolve(
-          NextResponse.json({ error: 'Failed to parse Python output' }, { status: 500 })
-        );
-      }
-    });
-  });
+    const data = await res.json();
+    return NextResponse.json(data);
+  } catch (err) {
+    console.error('❌ FastAPI error:', err);
+    return NextResponse.json({ error: 'Failed to reach backend' }, { status: 500 });
+  }
 }
