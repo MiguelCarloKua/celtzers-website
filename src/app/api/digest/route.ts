@@ -23,18 +23,43 @@ export async function POST(req: Request): Promise<Response> {
     python.on('close', () => {
       if (!output.trim()) {
         resolve(
-          NextResponse.json({ error: 'No output received from Python script' }, { status: 500 })
+          NextResponse.json(
+            { error: 'No output received from Python script' },
+            {
+              status: 500,
+              headers: {
+                'Access-Control-Allow-Origin': '*', // 🔥 Use specific origin in production
+                'Access-Control-Allow-Headers': '*',
+              },
+            }
+          )
         );
         return;
       }
 
       try {
         const parsed = JSON.parse(output);
-        resolve(NextResponse.json(parsed));
+        resolve(
+          NextResponse.json(parsed, {
+            headers: {
+              'Access-Control-Allow-Origin': '*', // ✅ Or use https://celtzers-website.vercel.app
+              'Access-Control-Allow-Headers': '*',
+            },
+          })
+        );
       } catch (err) {
         console.error('❌ Failed to parse:', err);
         resolve(
-          NextResponse.json({ error: 'Failed to parse Python output' }, { status: 500 })
+          NextResponse.json(
+            { error: 'Failed to parse Python output' },
+            {
+              status: 500,
+              headers: {
+                'Access-Control-Allow-Origin': '*',
+                'Access-Control-Allow-Headers': '*',
+              },
+            }
+          )
         );
       }
     });
