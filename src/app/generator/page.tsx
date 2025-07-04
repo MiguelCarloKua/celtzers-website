@@ -12,7 +12,7 @@ interface CaseSummary {
   facts: string;
   issues: string;
   rulings: string;
-  scores?: {
+  scores: {
     facts: EvaluationScore;
     issues: EvaluationScore;
     rulings: EvaluationScore;
@@ -26,7 +26,7 @@ export default function GeneratePage() {
   const [result, setResult] = useState<CaseSummary | null>(null);
   const [fileUrl, setFileUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [showScores, setShowScores] = useState(true);
+  const [showScores, setShowScores] = useState(false);
 
   const handleSubmit = async () => {
     try {
@@ -38,7 +38,10 @@ export default function GeneratePage() {
       });
 
       const data = await res.json();
-      setResult(data.summary);
+      setResult({
+        ...data.summary,
+        scores: data.scores,
+      });
       setFileUrl(data.downloadUrl);
     } catch (error) {
       console.error("Error submitting case:", error);
@@ -49,7 +52,7 @@ export default function GeneratePage() {
 
   return (
     <div className="min-h-screen bg-[#31255e] text-white font-sans py-20">
-      <div className="max-w-2xl mx-auto p-8 bg-[#523f9e] rounded-lg shadow-lg space-y-6">
+      <div className="max-w-4xl mx-auto p-8 bg-[#523f9e] rounded-lg shadow-lg space-y-6">
         <h2 className="text-3xl font-bold text-center  text-white">Generate a Case Digest</h2>
 
         <input
@@ -92,32 +95,40 @@ export default function GeneratePage() {
           {loading ? "Processing..." : "Generate Digest"}
         </button>
 
-        {result && (
-          <div className="bg-white text-gray-900 p-6 rounded shadow space-y-6">
-            <h2 className="text-2xl font-bold text-center text-[#523f9e]">Summary</h2>
+          {result && (
+            <div className="bg-white text-gray-900 p-6 rounded shadow space-y-6">
+              <h2 className="text-2xl font-bold text-center text-[#523f9e]">Summary</h2>
 
-            {(["facts", "issues", "rulings"] as SectionKey[]).map((section) => (
-              <div key={section}>
-                <h3 className="text-xl font-semibold text-[#7465b1] capitalize mb-2">{section}</h3>
-                {result[section].split("\n").map((line, idx) => (
-                  <p key={`${section}-${idx}`} className="mb-2">{line.trim()}</p>
+                {(["facts", "issues", "rulings"] as SectionKey[]).map((section) => (
+                  <div key={section} className="mb-4">
+                    <h3 className="text-xl font-semibold text-[#7465b1] capitalize mb-1">{section}</h3>
+
+                    {showScores && result.scores?.[section] && (
+                      <div className="text-sm text-[#7465b1] font-medium mb-2 ml-1">
+                        ROUGE-1: {result.scores[section]["rouge-1"].toFixed(2)},{" "}
+                        ROUGE-L: {result.scores[section]["rouge-l"].toFixed(2)},{" "}
+                        BERTScore: {result.scores[section]["bert-score"].toFixed(2)}
+                      </div>
+                    )}
+
+                    {result[section].split("\n").map((line, idx) => (
+                      <p key={`${section}-${idx}`} className="mb-2">{line.trim()}</p>
+                    ))}
+                  </div>
                 ))}
-                {showScores && result.scores?.[section] && (
-                  <ul className="text-sm pl-4 text-gray-600">
-                    <li>ROUGE-1: {result.scores[section]["rouge-1"].toFixed(2)}</li>
-                    <li>ROUGE-L: {result.scores[section]["rouge-l"].toFixed(2)}</li>
-                    <li>BERTScore: {result.scores[section]["bert-score"].toFixed(2)}</li>
-                  </ul>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
+
+            </div>
+          )}
 
         {fileUrl && (
-          <a href={fileUrl} download className="block mt-4 text-[#978bc4] underline text-center">
-            Download Generated File
-          </a>
+            <a
+              href={fileUrl}
+              download
+              className="w-full bg-[#7465b1] hover:bg-[#978bc4] py-2 rounded text-white font-semibold text-center block mt-4"
+            >
+              Download Generated File
+            </a>
+
         )}
       </div>
     </div>
