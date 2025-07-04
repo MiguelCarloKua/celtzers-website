@@ -31,6 +31,7 @@ export default function GeneratePage() {
   const handleSubmit = async () => {
     try {
       setLoading(true);
+      console.log("Submitting request with:", { url, direction });
       const res = await fetch("https://website-dependencies.onrender.com/generator", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
