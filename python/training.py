@@ -1,4 +1,5 @@
-import sys, os, json, re
+import sys, os, json, re, threading
+import logging
 from bs4 import BeautifulSoup
 from pathlib import Path
 from docx import Document
@@ -11,36 +12,39 @@ import numpy as np
 import google.generativeai as genai
 import requests
 import csv
+import torch
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(levelname)s] %(message)s',
+    handlers=[logging.StreamHandler(sys.stderr)]
+)
+
+log = logging.getLogger(__name__)
 
 # --- Load environment and configure Gemini ---
 load_dotenv()
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
+# Reuse ROUGE scorer object
+ROUGE_SCORER = rouge_scorer.RougeScorer(['rouge1', 'rougeL'], use_stemmer=True)
 
 def fetch_court_case(url, max_retries=3):
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-    }
+    headers = { "User-Agent": "Mozilla/5.0" }
     for attempt in range(max_retries):
         try:
-            print(f"🔄 Attempt {attempt + 1}: {url}", file=sys.stderr)
             response = requests.get(url, headers=headers, timeout=10)
             if response.status_code == 200:
                 return BeautifulSoup(response.content, "html.parser")
-            else:
-                print(f"⚠️ Status Code: {response.status_code}", file=sys.stderr)
-        except Exception as e:
-            print(f"❌ Request failed: {e}", file=sys.stderr)
+        except:
+            continue
     return None
 
 def is_meaningful_line(line):
     line = line.strip()
-    if len(line) < 5:
-        return False
-    if re.fullmatch(r'([xX*#.\-– ])\1{2,}', line.replace(' ', '')):
-        return False
-    if len(set(line.lower())) < 3:
-        return False
+    if len(line) < 5: return False
+    if re.fullmatch(r'([xX*#.\-– ])\1{2,}', line.replace(' ', '')): return False
+    if len(set(line.lower())) < 3: return False
     return True
 
 def clean_line(line):
@@ -49,8 +53,7 @@ def clean_line(line):
     return line.strip()
 
 def extract_full_text(soup):
-    for tag in soup.find_all(["a", "sup"]):
-        tag.decompose()
+    for tag in soup.find_all(["a", "sup"]): tag.decompose()
 
     def join_paragraphs(paragraphs):
         return "\n\n".join(p.get_text(" ", strip=True) for p in paragraphs if p.get_text(strip=True))
@@ -79,10 +82,8 @@ def extract_full_text(soup):
 def is_text_garbled(text):
     return text.count("�") > 10 or len(text.strip()) < 100
 
-
 def extract_case_details(text):
     text = text.replace('\r\n', '\n')
-
     court_level_match = re.search(r"(SUPREME COURT|COURT OF APPEALS|SANDIGANBAYAN|REGIONAL TRIAL COURT)", text, re.IGNORECASE)
     court_level = court_level_match.group(0).strip().title() if court_level_match else "Not Found"
 
@@ -104,8 +105,7 @@ def extract_case_details(text):
         petitioners = party_match.group(1).strip().title()
         respondents = party_match.group(3).strip().title()
     else:
-        petitioners = "Not Found"
-        respondents = "Not Found"
+        petitioners = respondents = "Not Found"
 
     petitioners = re.sub(r"\bManila\b|\b[A-Z]+\s+DIVISION\b|G\.R\. No\..*?\d{4}", "", petitioners, flags=re.IGNORECASE).strip(" ,")
 
@@ -131,32 +131,9 @@ def extract_case_details(text):
 
 def extract_case_sections_from_text(text):
     section_patterns = {
-        "Facts": [
-            r"(?:^|\n)\s*(?:The\s+)?("
-            r"Facts|Factual Antecedents|Background|Antecedents|The Case|Statement of Facts|The Antecedent Facts|"
-            r"Factual Background|Summary of Facts|Procedural History|Version of the Prosecution|"
-            r"Version of the Defense|Facts and Antecedent Proceedings|Narration of Facts|"
-            r"Facts of the Case|Case Background|Chronology of Events|Statement of the Case|"
-            r"Case Summary|The Incident|Recital of Facts|Historical Background|"
-            r"Overview of Facts"
-            r")\s*(?:\n|:)"
-        ],
-        "Issues": [
-            r"(?:^|\n)\s*(?:The\s+)?("
-            r"Issue Before the Court|Issues Before the Court|Issue|Issues|Legal Issue|Questions Presented|"
-            r"Statement of Issues|Points for Determination|Legal Questions|Controversy|"
-            r"Questions for Resolution|Matter for Consideration|Core Issue|"
-            r"Principal Issue|Pivotal Issue|Legal Questions Posed|Legal Questions Raised"
-            r")\s*(?:\n|:)"
-        ],
-        "Ruling": [
-            r"(?:^|\n)\s*(?:The\s+)?("
-            r"Ruling|Decision|Held|Disposition|So Ordered|Judgment|Court['’]s Ruling|"
-            r"Our Ruling|The Ruling of the Court|This Court['’]s Ruling|Ruling of the Court|"
-            r"Opinion|Holding|The Ruling of this Court|Final Disposition|Resolution|"
-            r"Conclusion|Finding|Adjudication|Result|Verdict|Decree"
-            r")\s*(?:\n|:)"
-        ]
+        "Facts": [r"(?:^|\n)\s*(Facts.*?)\s*(?:\n|:)"],
+        "Issues": [r"(?:^|\n)\s*(Issues.*?)\s*(?:\n|:)"],
+        "Ruling": [r"(?:^|\n)\s*(Ruling|Held|Disposition.*?)\s*(?:\n|:)"]
     }
 
     matches = []
@@ -168,7 +145,6 @@ def extract_case_sections_from_text(text):
     matches.sort()
     grouped = {"Facts": [], "Issues": [], "Ruling": []}
 
-    # --- Case 1: Matching headers found ---
     if matches:
         for i, (start, section) in enumerate(matches):
             end = matches[i + 1][0] if i + 1 < len(matches) else len(text)
@@ -179,19 +155,13 @@ def extract_case_sections_from_text(text):
             grouped[section].extend(meaningful)
         return grouped
 
-    # --- Case 2: No headers found — fallback logic ---
-    print("⚠️ No headers detected — using fallback segmentation.")
     lines = [line.strip() for line in text.split("\n") if is_meaningful_line(line)]
     total = len(lines)
-
     if total > 0:
         grouped["Facts"] = lines[: total // 3]
         grouped["Issues"] = lines[total // 3 : (2 * total) // 3]
         grouped["Ruling"] = lines[(2 * total) // 3 :]
-
     return grouped
-
-
 
 def generate_gemini_response(prompt, text):
     try:
@@ -200,7 +170,6 @@ def generate_gemini_response(prompt, text):
         return response.text.strip()
     except Exception as e:
         return f"❌ Gemini error: {str(e)}"
-
 
 def write_docx(summary, out_path, metadata):
     doc = Document()
@@ -224,89 +193,71 @@ def write_docx(summary, out_path, metadata):
         run = heading.add_run(section.upper())
         run.bold = True
         run.font.size = Pt(12)
-        doc.add_paragraph(summary[section])
+        for line in summary[section].splitlines():
+            doc.add_paragraph(line.strip())
         doc.add_paragraph()
 
-    doc.save(out_path)
 
 def clean_summary_output(raw_text: str) -> str:
-    """Cleans markdown, bullets, and excessive whitespace from Gemini output."""
     lines = raw_text.strip().splitlines()
-
     cleaned_lines = []
     for line in lines:
-        line = line.strip()
-
-        # Remove Markdown bold and italic symbols
         line = re.sub(r"[*_`]+", "", line)
-        line = re.sub(r'```csv\s*', '', line)
-        line = re.sub(r'```', '', line)
-        line = re.sub(r'Raw Generated (Facts|Issues|Rulings)', '', line, flags=re.IGNORECASE)
-        
-        # Remove markdown bullets (*, -, 1., etc.)
         line = re.sub(r"^\s*[-*•]\s*", "", line)
         line = re.sub(r"^\s*\d+\.\s*", "", line)
-
-        # Normalize colons
-        line = re.sub(r"\s*:\s*", ": ", line)
-
-        # Remove redundant spaces
         line = re.sub(r"\s{2,}", " ", line)
-
         if line:
-            cleaned_lines.append(line)
-
+            cleaned_lines.append(line.strip())
     return "\n".join(cleaned_lines)
 
 def compute_rouge(generated: str, reference: str):
-    scorer = rouge_scorer.RougeScorer(['rouge1', 'rougeL'], use_stemmer=True)
-    scores = scorer.score(reference, generated)
+    scores = ROUGE_SCORER.score(reference, generated)
     return {
         "rouge-1": scores["rouge1"].fmeasure,
         "rouge-l": scores["rougeL"].fmeasure,
     }
 
 def compute_bert_score(generated: str, reference: str):
-    P, R, F1 = bert_score([generated], [reference], lang="en", rescale_with_baseline=True)
-    return {
-        "bert-score": F1[0].item()
-    }
+    P, R, F1 = bert_score(
+        [generated], [reference],
+        lang="en",
+        rescale_with_baseline=True,
+        device="cuda" if torch.cuda.is_available() else "cpu",
+        model_type="distilbert-base-uncased"
+    )
+    return { "bert-score": F1[0].item() }
 
 def evaluate_all(generated: str, reference: str):
-    rouge = compute_rouge(generated, reference)
-    bert = compute_bert_score(generated, reference)
+    gen_lines = generated.splitlines()
+    ref_lines = reference.splitlines()
+    scores = []
+
+    for gen, ref in zip(gen_lines, ref_lines):
+        rouge = compute_rouge(gen, ref)
+        bert = compute_bert_score(gen, ref)
+        scores.append({
+            "rouge-1": round(rouge["rouge-1"], 4),
+            "rouge-l": round(rouge["rouge-l"], 4),
+            "bert-score": round(bert["bert-score"], 4),
+        })
+
+    # Average across lines
+    avg = lambda key: round(np.mean([s[key] for s in scores]), 4) if scores else 0.0
     return {
-        "rouge-1": round(rouge["rouge-1"], 4),
-        "rouge-l": round(rouge["rouge-l"], 4),
-        "bert-score": round(bert["bert-score"], 4),
+        "rouge-1": avg("rouge-1"),
+        "rouge-l": avg("rouge-l"),
+        "bert-score": avg("bert-score"),
+        "sentence_scores": scores
     }
 
 
-def main():
-    if len(sys.argv) < 3:
-        print("Usage: training.py <url> <direction>")
-        return
-
-    url = sys.argv[1]
-    direction = sys.argv[2].lower()
-    if direction not in ["forward", "backward"]:
-        print(json.dumps({ "error": "Direction must be either 'forward' or 'backward'" }))
-        return
-
-    soup = fetch_court_case(url)
-    if not soup:
-        print(json.dumps({ "error": "Failed to fetch or parse the URL" }))
-        return
-
-    text = extract_full_text(soup)
-    if is_text_garbled(text):
-        print(json.dumps({ "error": "Extracted text is too short or garbled" }))
-        return
-
-    base_dir = Path(__file__).resolve().parent.parent
-    with open(base_dir / "data/config.json", "r") as f:
+def main_pipeline(url: str, direction: str, evaluate: bool = True):
+    base_dir = Path(__file__).resolve().parent.parent  # move to project root
+    with open(base_dir / "data" / "config.json", "r") as f:
         config = json.load(f)
 
+    soup = fetch_court_case(url)
+    text = extract_full_text(soup)
     metadata = extract_case_details(text)
     sections = extract_case_sections_from_text(text)
 
@@ -326,55 +277,34 @@ def main():
         "rulings": clean_summary_output(generate_gemini_response(config["RULINGS"][direction.upper()]["Instructor_ChainOfThought"], rulings_input)),
     }
 
-                    # Compute evaluation metrics
-    facts_scores = evaluate_all(summary["facts"], "\n".join(sections["Facts"]))
-    issues_scores = evaluate_all(summary["issues"], "\n".join(sections["Issues"]))
-    rulings_scores = evaluate_all(summary["rulings"], "\n".join(sections["Ruling"]))
+    results = {}
+    if evaluate:
+        results = {
+            "facts": evaluate_all(summary["facts"], "\n".join(sections["Facts"])),
+            "issues": evaluate_all(summary["issues"], "\n".join(sections["Issues"])),
+            "rulings": evaluate_all(summary["rulings"], "\n".join(sections["Ruling"])),
+        }
+
+
+    log.info("✅ Scoring complete")
 
     output_dir = base_dir / "public/downloads"
     output_dir.mkdir(parents=True, exist_ok=True)
-    filename = f"{metadata['G.R. Number'].replace(' ', '_')}_{direction}_digested.docx"
-    out_path = output_dir / filename
-    write_docx(summary, out_path, metadata)
+    filename = f"{metadata['G.R. Number'].replace(' ', '_')}_{direction}_digest.docx"
+    write_docx(summary, output_dir / filename, metadata)
 
-    # Save as CSV
-    csv_dir = base_dir / "public/generated_csv"
-    csv_dir.mkdir(parents=True, exist_ok=True)
-    csv_path = csv_dir / f"{metadata['G.R. Number'].replace(' ', '_')}_{direction}_output.csv"
-    with open(csv_path, "w", newline="", encoding="utf-8") as csvfile:
-        writer = csv.writer(csvfile)
-        writer.writerow([
-            "G.R. Number",
-            "Generated_Facts", "Generated_Issues", "Generated_Rulings",
-            "Original_Facts", "Original_Issues", "Original_Rulings",
-            "Facts_ROUGE-1", "Facts_ROUGE-L", "Facts_BERTScore",
-            "Issues_ROUGE-1", "Issues_ROUGE-L", "Issues_BERTScore",
-            "Rulings_ROUGE-1", "Rulings_ROUGE-L", "Rulings_BERTScore"
-        ])
-
-        writer.writerow([
-            metadata["G.R. Number"],
-            summary["facts"], summary["issues"], summary["rulings"],
-            "\n".join(sections["Facts"]),
-            "\n".join(sections["Issues"]),
-            "\n".join(sections["Ruling"]),
-            facts_scores["rouge-1"], facts_scores["rouge-l"], facts_scores["bert-score"],
-            issues_scores["rouge-1"], issues_scores["rouge-l"], issues_scores["bert-score"],
-            rulings_scores["rouge-1"], rulings_scores["rouge-l"], rulings_scores["bert-score"],
-        ])
+    log.info(f"📄 Digest saved as: {filename}")
 
 
-    # Compute evaluation metrics
-    print(json.dumps({
+
+
+    return {
         "summary": summary,
-        "downloadUrl": f"/downloads/{filename}",
-        "csvUrl": f"/generated_csv/{csv_path.name}",
-        "scores": {
-            "facts": facts_scores,
-            "issues": issues_scores,
-            "rulings": rulings_scores
-        }
-    }))
+        "scores": results,
+        "metadata": metadata,
+        "downloadUrl": f"/downloads/{filename}"
+    }
 
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) == 3:
+        print(json.dumps(main_pipeline(sys.argv[1], sys.argv[2])))
