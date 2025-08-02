@@ -17,7 +17,7 @@ export async function POST(req: Request): Promise<Response> {
     });
 
     python.stderr.on('data', (data) => {
-      console.error('🚨 Python stderr:', data.toString());
+      console.error('Log:', data.toString());
     });
 
     python.on('close', () => {

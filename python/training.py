@@ -174,7 +174,7 @@ def generate_gemini_response(prompt, text):
 def write_docx(summary, out_path, metadata):
     doc = Document()
     title = doc.add_paragraph()
-    run = title.add_run(f"Digest – {summary['gr_no']}")
+    run = title.add_run(f"{metadata['Petitioners']} vs. {metadata['Respondents']}")
     run.bold = True
     run.font.size = Pt(16)
     title.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
@@ -196,6 +196,25 @@ def write_docx(summary, out_path, metadata):
         for line in summary[section].splitlines():
             doc.add_paragraph(line.strip())
         doc.add_paragraph()
+    doc.save(out_path)
+
+def append_to_csv(summary, metadata, csv_path):
+    headers = ["G.R. Number", "Direction", "Facts", "Issues", "Rulings"]
+    row = [
+        metadata["G.R. Number"],
+        metadata.get("Direction", ""),
+        summary["facts"],
+        summary["issues"],
+        summary["rulings"]
+    ]
+
+    file_exists = csv_path.exists()
+    with open(csv_path, "a", newline='', encoding='utf-8') as f:
+        writer = csv.writer(f)
+        if not file_exists:
+            writer.writerow(headers)
+        writer.writerow(row)
+
 
 
 def clean_summary_output(raw_text: str) -> str:
@@ -252,12 +271,15 @@ def evaluate_all(generated: str, reference: str):
 
 
 def main_pipeline(url: str, direction: str, evaluate: bool = True):
-    base_dir = Path(__file__).resolve().parent.parent  # move to project root
+    base_dir = Path.cwd()  # move to project root
     with open(base_dir / "data" / "config.json", "r") as f:
         config = json.load(f)
 
+    log.info("Fetching and parsing case from URL...")
     soup = fetch_court_case(url)
     text = extract_full_text(soup)
+
+    log.info("Extracting metadata and sections...")
     metadata = extract_case_details(text)
     sections = extract_case_sections_from_text(text)
 
@@ -270,6 +292,7 @@ def main_pipeline(url: str, direction: str, evaluate: bool = True):
         issues_input = "\n".join(sections["Issues"])
         rulings_input = "\n".join(sections["Ruling"])
 
+    log.info("Generating facts, issues and rulings")
     summary = {
         "gr_no": metadata["G.R. Number"],
         "facts": clean_summary_output(generate_gemini_response(config["FACTS"][direction.upper()]["Instructor_Extractive"], facts_input)),
@@ -279,6 +302,7 @@ def main_pipeline(url: str, direction: str, evaluate: bool = True):
 
     results = {}
     if evaluate:
+        log.info("Evaluating outputs...")
         results = {
             "facts": evaluate_all(summary["facts"], "\n".join(sections["Facts"])),
             "issues": evaluate_all(summary["issues"], "\n".join(sections["Issues"])),
@@ -286,24 +310,35 @@ def main_pipeline(url: str, direction: str, evaluate: bool = True):
         }
 
 
-    log.info("✅ Scoring complete")
-
     output_dir = base_dir / "public/downloads"
     output_dir.mkdir(parents=True, exist_ok=True)
-    filename = f"{metadata['G.R. Number'].replace(' ', '_')}_{direction}_digest.docx"
-    write_docx(summary, output_dir / filename, metadata)
+    csv_dir = base_dir / "public/generated_csv"
+    csv_dir.mkdir(parents=True, exist_ok=True)
 
-    log.info(f"📄 Digest saved as: {filename}")
+    # Sanitize G.R. Number
+    safe_gr = metadata["G.R. Number"].replace(" ", "_")
 
 
+    # Filenames
+    docx_filename = f"{safe_gr}_{direction}_digested.docx"
+    csv_filename = f"{safe_gr}_{direction}_output.csv"
 
+    # Write files
+    write_docx(summary, output_dir / docx_filename, metadata)
+    append_to_csv(summary, metadata, csv_dir / csv_filename)
+
+    log.info(f"Digest saved as: {docx_filename}")
+    log.info(f"CSV output saved as: {csv_filename}")
+    log.info("All files written successfully.")
 
     return {
         "summary": summary,
         "scores": results,
         "metadata": metadata,
-        "downloadUrl": f"/downloads/{filename}"
+        "downloadUrl": f"/downloads/{docx_filename}",
+        "csvUrl": f"/downloads/{csv_filename}"
     }
+
 
 if __name__ == "__main__":
     if len(sys.argv) == 3:
