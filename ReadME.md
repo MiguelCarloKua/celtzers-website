@@ -13,12 +13,11 @@
 ---
 
 ## Thesis Overview  
-This thesis, titled **“[Thesis Title]”**, focuses on **[briefly describe the main goal/problem your thesis addresses]**.  
-The study aims to **[main objectives in one or two sentences]**, and demonstrates its findings through **[short description of methods, tools, or prototype developed]**.  
+This thesis, titled “Text Summarization of Legal Documents”, focuses on generating concise and accurate digests from lengthy legal texts. The study aims to improve efficiency in legal analysis by implementing forward and backward chaining approaches, using Gemini 2.0 Flash to generate and evaluate outputs through both automated and manual methods.
 
 ---
 
-## 📂 Deliverables File Structure  
+## Deliverables File Structure  
 
 /deliverables
 │
