@@ -17,22 +17,18 @@ This thesis, titled “Text Summarization of Legal Documents”, focuses on gene
 
 ---
 
-## Deliverables File Structure  
+## Deliverables File Structure
 
-/deliverables
-│
-├── VIDEO PRESENTATION/ # Recorded thesis defense or demo video
-│
-├── SOURCE/ # Source code for case digest generator tool and Python Chaining notebooks. Data consisting of manual evaluations, evaluation plots, case digests, and generated data for chaining approaches.
-│
-├── PRESENTATIONS/ # Presentation Slides
-│
-├── MARKETING MATERIAL/ (None)
-│
-├── ENDORSEMENTS/ # Endorsements from adviser and panels
-│
-├── DOC/ # Thesis, conference paper, and technical manual
-│
-├── BROCHURE/ # Poster
-│
-└── APP (NONE)
+- **VIDEO PRESENTATION/** – Recorded thesis defense or demo video  
+- **SOURCE/** – Source code for case digest generator tool and Python chaining notebooks.  
+  Includes:
+  - Manual evaluations  
+  - Evaluation plots  
+  - Case digests  
+  - Generated data for chaining approaches  
+- **PRESENTATIONS/** – Presentation slides  
+- **MARKETING MATERIAL/** – *(None)*  
+- **ENDORSEMENTS/** – Endorsements from adviser and panels  
+- **DOC/** – Thesis, conference paper, and technical manual  
+- **BROCHURE/** – Poster  
+- **APP/** – *(None)*
